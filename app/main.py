@@ -4,6 +4,16 @@ from app.core.config import settings
 from app.database import Base, engine
 from app.routers import auth, reviews, categories, admin
 
+import os, sys
+
+# Railway sets RAILWAY_ENVIRONMENT automatically. Bail out early if DATABASE_URL
+# wasn't configured — silently falling back to SQLite on an ephemeral filesystem
+# means all data is wiped on every deploy.
+if os.getenv("RAILWAY_ENVIRONMENT") and settings.DATABASE_URL.startswith("sqlite"):
+    print("FATAL: Running on Railway but DATABASE_URL is not set — would use SQLite "
+          "on an ephemeral filesystem. Set DATABASE_URL in Railway service variables.", file=sys.stderr)
+    sys.exit(1)
+
 app = FastAPI(title="Rollout Report API", version="1.0.0")
 
 app.add_middleware(
