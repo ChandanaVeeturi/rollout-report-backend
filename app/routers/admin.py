@@ -14,8 +14,8 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 def slugify(text: str) -> str:
     text = text.lower().strip()
-    text = re.sub(r"[^\w\s-]", "", text)
-    text = re.sub(r"[\s_-]+", "-", text)
+    text = re.sub(r"[^\w\s.-]", "", text)   # keep dots so "1.0" stays "1.0"
+    text = re.sub(r"[.\s_-]+", "-", text)   # then replace dots/spaces/_ with hyphens
     return text.strip("-")
 
 
@@ -122,11 +122,15 @@ def delete_review(slug: str, db: Session = Depends(get_db), admin: User = Depend
 
 @router.post("/reviews/{slug}/pin")
 def pin_review(slug: str, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
-    # unpin all first
-    db.query(Review).update({Review.is_pinned: False})
     review = db.query(Review).filter(Review.slug == slug).first()
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
+    if review.is_pinned:
+        review.is_pinned = False
+        db.commit()
+        return {"pinned": False}
+    db.query(Review).update({Review.is_pinned: False})
+    db.refresh(review)
     review.is_pinned = True
     db.commit()
     return {"pinned": True}
