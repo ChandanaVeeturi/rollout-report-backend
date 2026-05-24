@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg
+*.egg-info/
+dist/
+build/
+wheels/
+*.whl
+
+# Virtual environment
+venv/
+.venv/
+env/
+ENV/
+
+# Environment variables — never commit secrets
+.env
+
+# SQLite database
+*.db
+*.db-shm
+*.db-wal
+
+# Alembic — keep migrations, ignore local cache
+alembic/__pycache__/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Uploads / media (local dev only)
+uploads/
+media/
