@@ -68,6 +68,38 @@ def list_reviews(
     return PaginatedReviews(items=items, total=total, page=page, per_page=per_page, pages=max(1, math.ceil(total / per_page)))
 
 
+@router.get("/bookmarks", response_model=list[ReviewListOut])
+def get_bookmarks(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    bookmarks = (
+        db.query(Bookmark)
+        .filter(Bookmark.user_id == current_user.id)
+        .order_by(Bookmark.created_at.desc())
+        .all()
+    )
+    review_ids = [b.review_id for b in bookmarks]
+    if not review_ids:
+        return []
+    reviews = (
+        db.query(Review)
+        .options(joinedload(Review.category), joinedload(Review.review_tags).joinedload(ReviewTag.tag))
+        .filter(Review.id.in_(review_ids))
+        .all()
+    )
+    order = {rid: i for i, rid in enumerate(review_ids)}
+    reviews.sort(key=lambda r: order[r.id])
+    return [
+        ReviewListOut(
+            **{c.name: getattr(r, c.name) for c in r.__table__.columns},
+            category=r.category,
+            tags=[rt.tag for rt in r.review_tags],
+        )
+        for r in reviews
+    ]
+
+
 @router.get("/{slug}", response_model=ReviewOut)
 def get_review(
     slug: str,
@@ -194,38 +226,6 @@ def toggle_upvote(
         upvoted = True
     db.commit()
     return {"upvoted": upvoted, "upvote_count": review.upvote_count}
-
-
-@router.get("/bookmarks", response_model=list[ReviewListOut])
-def get_bookmarks(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    bookmarks = (
-        db.query(Bookmark)
-        .filter(Bookmark.user_id == current_user.id)
-        .order_by(Bookmark.created_at.desc())
-        .all()
-    )
-    review_ids = [b.review_id for b in bookmarks]
-    if not review_ids:
-        return []
-    reviews = (
-        db.query(Review)
-        .options(joinedload(Review.category), joinedload(Review.review_tags).joinedload(ReviewTag.tag))
-        .filter(Review.id.in_(review_ids))
-        .all()
-    )
-    order = {rid: i for i, rid in enumerate(review_ids)}
-    reviews.sort(key=lambda r: order[r.id])
-    return [
-        ReviewListOut(
-            **{c.name: getattr(r, c.name) for c in r.__table__.columns},
-            category=r.category,
-            tags=[rt.tag for rt in r.review_tags],
-        )
-        for r in reviews
-    ]
 
 
 @router.post("/{slug}/bookmark")
