@@ -137,3 +137,8 @@ class CommentCreate(BaseModel):
 
 class CommentUpdate(BaseModel):
     body: str
+
+
+class CategoryCreate(BaseModel):
+    name: str
+    icon: Optional[str] = None

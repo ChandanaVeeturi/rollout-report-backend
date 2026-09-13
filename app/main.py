@@ -1,20 +1,27 @@
+import os, sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from app.core.config import settings
+from app.core.limiter import limiter
 from app.database import Base, engine
 from app.routers import auth, reviews, categories, admin
 
-import os, sys
-
-# Railway sets RAILWAY_ENVIRONMENT automatically. Bail out early if DATABASE_URL
-# wasn't configured — silently falling back to SQLite on an ephemeral filesystem
-# means all data is wiped on every deploy.
+# On Railway, refuse to start with SQLite — ephemeral filesystem loses all data on redeploy
 if os.getenv("RAILWAY_ENVIRONMENT") and settings.DATABASE_URL.startswith("sqlite"):
-    print("FATAL: Running on Railway but DATABASE_URL is not set — would use SQLite "
-          "on an ephemeral filesystem. Set DATABASE_URL in Railway service variables.", file=sys.stderr)
+    print(
+        "FATAL: Running on Railway but DATABASE_URL is not set — would use SQLite "
+        "on an ephemeral filesystem. Set DATABASE_URL in Railway service variables.",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 app = FastAPI(title="Rollout Report API", version="1.0.0")
+
+# Rate limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,8 +39,24 @@ app.include_router(admin.router)
 
 @app.on_event("startup")
 def on_startup():
+    _warn_insecure_defaults()
     Base.metadata.create_all(bind=engine)
     _seed_initial_data()
+
+
+def _warn_insecure_defaults():
+    if settings.SECRET_KEY == "dev-secret-key-change-in-production":
+        print(
+            "⚠️  WARNING: SECRET_KEY is using the insecure default. "
+            "Set SECRET_KEY in your environment before deploying to production.",
+            file=sys.stderr,
+        )
+    if settings.ADMIN_PASSWORD == "admin123":
+        print(
+            "⚠️  WARNING: ADMIN_PASSWORD is using the default 'admin123'. "
+            "Set ADMIN_PASSWORD in your environment before deploying to production.",
+            file=sys.stderr,
+        )
 
 
 def _seed_initial_data():
@@ -45,7 +68,6 @@ def _seed_initial_data():
 
     db = SessionLocal()
     try:
-        # Create admin user if not exists
         if not db.query(User).filter(User.email == settings.ADMIN_EMAIL).first():
             db.add(User(
                 id=str(uuid.uuid4()),
@@ -56,15 +78,14 @@ def _seed_initial_data():
                 email_verified=True,
             ))
 
-        # Seed categories
         default_categories = [
-            ("Dev Tools", "dev-tools", "🛠️"),
+            ("Dev Tools",    "dev-tools",    "🛠️"),
             ("Productivity", "productivity", "⚡"),
-            ("Design", "design", "🎨"),
-            ("AI Tools", "ai-tools", "🤖"),
-            ("Security", "security", "🔒"),
-            ("DevOps", "devops", "📡"),
-            ("Mobile", "mobile", "📱"),
+            ("Design",       "design",       "🎨"),
+            ("AI Tools",     "ai-tools",     "🤖"),
+            ("Security",     "security",     "🔒"),
+            ("DevOps",       "devops",       "📡"),
+            ("Mobile",       "mobile",       "📱"),
         ]
         for name, slug, icon in default_categories:
             if not db.query(Category).filter(Category.slug == slug).first():

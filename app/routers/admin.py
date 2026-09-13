@@ -1,26 +1,28 @@
-from fastapi import APIRouter, Depends, HTTPException
+import unicodedata
+import re
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.review import Review, Category, Tag, ReviewTag
 from app.models.user import User
-from app.schemas.review import ReviewCreate, ReviewUpdate, ReviewOut, ReviewListOut, CategoryOut
+from app.schemas.review import ReviewCreate, ReviewUpdate, ReviewOut, ReviewListOut, CategoryOut, CategoryCreate, PaginatedReviews
 from app.core.deps import require_admin
 from datetime import datetime, timezone
-import uuid
-import re
+import math
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
 def slugify(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     text = text.lower().strip()
-    text = re.sub(r"[^\w\s.-]", "", text)   # keep dots so "1.0" stays "1.0"
-    text = re.sub(r"[.\s_-]+", "-", text)   # then replace dots/spaces/_ with hyphens
+    text = re.sub(r"[^\w\s.-]", "", text)
+    text = re.sub(r"[.\s_-]+", "-", text)
     return text.strip("-")
 
 
 def _sync_tags(review: Review, tag_slugs: list[str], db: Session):
-    # Remove existing
     db.query(ReviewTag).filter(ReviewTag.review_id == review.id).delete()
     for slug in tag_slugs:
         tag = db.query(Tag).filter(Tag.slug == slug).first()
@@ -38,7 +40,6 @@ def create_review(
     admin: User = Depends(require_admin),
 ):
     slug = payload.slug or slugify(payload.title)
-    # ensure unique slug
     base, counter = slug, 1
     while db.query(Review).filter(Review.slug == slug).first():
         slug = f"{base}-{counter}"
@@ -129,20 +130,29 @@ def pin_review(slug: str, db: Session = Depends(get_db), admin: User = Depends(r
         review.is_pinned = False
         db.commit()
         return {"pinned": False}
-    db.query(Review).update({Review.is_pinned: False})
-    db.refresh(review)
+    # Unpin all first, then pin the target
+    for r in db.query(Review).filter(Review.is_pinned == True).all():
+        r.is_pinned = False
     review.is_pinned = True
     db.commit()
     return {"pinned": True}
 
 
-@router.get("/reviews", response_model=list[ReviewListOut])
-def admin_list_reviews(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+@router.get("/reviews", response_model=PaginatedReviews)
+def admin_list_reviews(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
     from sqlalchemy.orm import joinedload
-    reviews = db.query(Review).options(
+    query = db.query(Review).options(
         joinedload(Review.category), joinedload(Review.review_tags).joinedload(ReviewTag.tag)
-    ).order_by(Review.created_at.desc()).all()
-    return [
+    ).order_by(Review.created_at.desc())
+
+    total = query.count()
+    reviews = query.offset((page - 1) * per_page).limit(per_page).all()
+    items = [
         ReviewListOut(
             **{c.name: getattr(r, c.name) for c in r.__table__.columns},
             category=r.category,
@@ -150,18 +160,19 @@ def admin_list_reviews(db: Session = Depends(get_db), admin: User = Depends(requ
         )
         for r in reviews
     ]
+    return PaginatedReviews(items=items, total=total, page=page, per_page=per_page, pages=max(1, math.ceil(total / per_page)))
 
 
 @router.post("/categories", response_model=CategoryOut, status_code=201)
 def create_category(
-    name: str, icon: str | None = None,
+    payload: CategoryCreate,
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    slug = slugify(name)
+    slug = slugify(payload.name)
     if db.query(Category).filter(Category.slug == slug).first():
         raise HTTPException(status_code=400, detail="Category already exists")
-    cat = Category(id=str(uuid.uuid4()), name=name, slug=slug, icon=icon)
+    cat = Category(id=str(uuid.uuid4()), name=payload.name, slug=slug, icon=payload.icon)
     db.add(cat)
     db.commit()
     db.refresh(cat)
@@ -174,4 +185,13 @@ def ban_user(user_id: str, db: Session = Depends(get_db), admin: User = Depends(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     user.is_banned = True
+    db.commit()
+
+
+@router.delete("/users/{user_id}/ban", status_code=204)
+def unban_user(user_id: str, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.is_banned = False
     db.commit()

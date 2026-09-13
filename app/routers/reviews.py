@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, func
+from sqlalchemy import or_
 from app.database import get_db
 from app.models.review import Review, Upvote, Bookmark, Comment, Tag, ReviewTag
 from app.models.user import User
@@ -24,12 +24,23 @@ def _enrich(review: Review, user: User | None, db: Session) -> dict:
     return d
 
 
+def _trend_score(review: Review) -> float:
+    pub = review.published_at
+    if pub is None:
+        return 0.0
+    if pub.tzinfo is None:
+        pub = pub.replace(tzinfo=timezone.utc)
+    age_hours = max((datetime.now(timezone.utc) - pub).total_seconds() / 3600, 0)
+    return (review.upvote_count + 1) / ((age_hours + 2) ** 1.5)
+
+
 @router.get("", response_model=PaginatedReviews)
 def list_reviews(
     sort: str = Query("recent", enum=["recent", "popular", "trending"]),
     category: str | None = None,
     verdict: str | None = None,
     platform: str | None = None,
+    tag: str | None = None,
     q: str | None = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=50),
@@ -50,14 +61,23 @@ def list_reviews(
         query = query.filter(Review.verdict == verdict)
     if platform:
         query = query.filter(Review.platforms.ilike(f"%{platform}%"))
+    if tag:
+        query = query.join(ReviewTag, Review.id == ReviewTag.review_id).join(Tag, ReviewTag.tag_id == Tag.id).filter(Tag.slug == tag)
     if q:
         query = query.filter(
             or_(Review.title.ilike(f"%{q}%"), Review.tagline.ilike(f"%{q}%"), Review.body.ilike(f"%{q}%"))
         )
 
+    # Trending uses time-decay in Python — fetch all matching, sort, then paginate
+    if sort == "trending":
+        all_reviews = query.all()
+        all_reviews.sort(key=_trend_score, reverse=True)
+        total = len(all_reviews)
+        reviews = all_reviews[(page - 1) * per_page: page * per_page]
+        items = [ReviewListOut(**_enrich(r, current_user, db)) for r in reviews]
+        return PaginatedReviews(items=items, total=total, page=page, per_page=per_page, pages=max(1, math.ceil(total / per_page)))
+
     if sort == "popular":
-        query = query.order_by(Review.upvote_count.desc(), Review.published_at.desc())
-    elif sort == "trending":
         query = query.order_by(Review.upvote_count.desc(), Review.published_at.desc())
     else:
         query = query.order_by(Review.is_pinned.desc(), Review.published_at.desc())
@@ -147,7 +167,7 @@ def post_comment(
     if len(payload.body.strip()) == 0:
         raise HTTPException(status_code=400, detail="Comment cannot be empty")
     if len(payload.body) > 2000:
-        raise HTTPException(status_code=400, detail="Comment too long")
+        raise HTTPException(status_code=400, detail="Comment too long (max 2000 characters)")
 
     import uuid
     comment = Comment(
@@ -160,7 +180,6 @@ def post_comment(
     review.comment_count += 1
     db.commit()
     db.refresh(comment)
-    # reload with user
     comment = db.query(Comment).options(joinedload(Comment.user)).filter(Comment.id == comment.id).first()
     return comment
 
@@ -176,9 +195,16 @@ def edit_comment(
     comment = db.query(Comment).options(joinedload(Comment.user)).filter(Comment.id == comment_id).first()
     if not comment or comment.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Comment not found")
-    elapsed = (datetime.now(timezone.utc) - comment.created_at.replace(tzinfo=timezone.utc)).total_seconds()
+    if comment.is_deleted:
+        raise HTTPException(status_code=403, detail="Cannot edit a deleted comment")
+    pub = comment.created_at
+    if pub.tzinfo is None:
+        pub = pub.replace(tzinfo=timezone.utc)
+    elapsed = (datetime.now(timezone.utc) - pub).total_seconds()
     if elapsed > 900:
         raise HTTPException(status_code=403, detail="Edit window has passed (15 minutes)")
+    if len(payload.body.strip()) == 0:
+        raise HTTPException(status_code=400, detail="Comment cannot be empty")
     comment.body = payload.body.strip()
     comment.updated_at = datetime.now(timezone.utc)
     db.commit()
