@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.review import Review, Category, Tag, ReviewTag
 from app.models.user import User
+from app.models.blog import BlogQA
 from app.schemas.review import ReviewCreate, ReviewUpdate, ReviewOut, ReviewListOut, CategoryOut, CategoryCreate, PaginatedReviews
+from app.schemas.blog import BlogQACreate, BlogQAUpdate, BlogQAOut
 from app.core.deps import require_admin
 from datetime import datetime, timezone
 import math
@@ -194,4 +196,48 @@ def unban_user(user_id: str, db: Session = Depends(get_db), admin: User = Depend
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     user.is_banned = False
+    db.commit()
+
+
+# ── Blog Q&A (admin-only prep material, never exposed to guests) ────────────
+
+@router.get("/blog", response_model=list[BlogQAOut])
+def list_blog_qa(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    return db.query(BlogQA).order_by(BlogQA.created_at.desc()).all()
+
+
+@router.post("/blog", response_model=BlogQAOut, status_code=201)
+def create_blog_qa(payload: BlogQACreate, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    if not payload.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    entry = BlogQA(id=str(uuid.uuid4()), question=payload.question.strip(), answer="")
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@router.patch("/blog/{entry_id}", response_model=BlogQAOut)
+def update_blog_qa(entry_id: str, payload: BlogQAUpdate, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    entry = db.query(BlogQA).filter(BlogQA.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if payload.question is not None:
+        if not payload.question.strip():
+            raise HTTPException(status_code=400, detail="Question cannot be empty")
+        entry.question = payload.question.strip()
+    if payload.answer is not None:
+        entry.answer = payload.answer
+    entry.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@router.delete("/blog/{entry_id}", status_code=204)
+def delete_blog_qa(entry_id: str, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    entry = db.query(BlogQA).filter(BlogQA.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    db.delete(entry)
     db.commit()
