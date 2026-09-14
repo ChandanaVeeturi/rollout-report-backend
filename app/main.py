@@ -62,7 +62,7 @@ def _warn_insecure_defaults():
 def _seed_initial_data():
     from app.database import SessionLocal
     from app.models.user import User
-    from app.models.review import Category
+    from app.models.review import Category, Review
     from app.core.security import hash_password
     import uuid
 
@@ -78,18 +78,59 @@ def _seed_initial_data():
                 email_verified=True,
             ))
 
+        # Mirrors Product Hunt's top-level category taxonomy
+        # (https://www.producthunt.com/categories), so review topics line up
+        # with how users already browse software elsewhere.
         default_categories = [
-            ("Dev Tools",    "dev-tools",    "🛠️"),
-            ("Productivity", "productivity", "⚡"),
-            ("Design",       "design",       "🎨"),
-            ("AI Tools",     "ai-tools",     "🤖"),
-            ("Security",     "security",     "🔒"),
-            ("DevOps",       "devops",       "📡"),
-            ("Mobile",       "mobile",       "📱"),
+            ("Productivity",              "productivity",              "⚡"),
+            ("Engineering & Development",  "engineering-development",  "🛠️"),
+            ("Design & Creative",          "design-creative",          "🎨"),
+            ("Finance",                    "finance",                  "💰"),
+            ("Marketing & Sales",          "marketing-sales",          "📣"),
+            ("Social & Community",         "social-community",         "💬"),
+            ("Health & Fitness",           "health-fitness",           "🏃"),
+            ("Travel",                     "travel",                   "✈️"),
+            ("Platforms",                  "platforms",                "🧩"),
+            ("LLMs",                       "llms",                     "🤖"),
+            ("Web3",                       "web3",                     "⛓️"),
+            ("Physical Products",          "physical-products",        "📦"),
+            ("AI Agents",                  "ai-agents",                "🧠"),
+            ("Voice AI Tools",             "voice-ai-tools",           "🎙️"),
+            ("Ecommerce",                  "ecommerce",                "🛒"),
+            ("No-code Platforms",          "no-code-platforms",        "🧱"),
+            ("Family",                     "family",                   "👨‍👩‍👧"),
+            ("Data Analysis Tools",        "data-analysis-tools",      "📊"),
+            ("Lifestyle",                  "lifestyle",                "🌿"),
+            ("Other",                      "other",                    "🗂️"),
         ]
+        default_slugs = {slug for _, slug, _ in default_categories}
         for name, slug, icon in default_categories:
-            if not db.query(Category).filter(Category.slug == slug).first():
+            existing = db.query(Category).filter(Category.slug == slug).first()
+            if not existing:
                 db.add(Category(id=str(uuid.uuid4()), name=name, slug=slug, icon=icon))
+            elif existing.name != name or existing.icon != icon:
+                existing.name = name
+                existing.icon = icon
+
+        db.flush()  # assign ids to newly-added categories before remapping
+
+        # Migrate any reviews left over from the old 7-category taxonomy onto
+        # their closest match in the new list, then drop the old category.
+        legacy_slug_map = {
+            "dev-tools": "engineering-development",
+            "design":    "design-creative",
+            "ai-tools":  "llms",
+            "security":  "engineering-development",
+            "devops":    "engineering-development",
+            "mobile":    "other",
+        }
+        stale = db.query(Category).filter(Category.slug.notin_(default_slugs)).all()
+        for cat in stale:
+            target_slug = legacy_slug_map.get(cat.slug, "other")
+            target = db.query(Category).filter(Category.slug == target_slug).first()
+            if target:
+                db.query(Review).filter(Review.category_id == cat.id).update({"category_id": target.id})
+            db.delete(cat)
 
         db.commit()
     finally:
