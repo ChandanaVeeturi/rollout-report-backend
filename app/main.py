@@ -132,6 +132,11 @@ def _seed_initial_data():
                 db.query(Review).filter(Review.category_id == cat.id).update({"category_id": target.id})
             db.delete(cat)
 
+        db.flush()
+
+        from seed_stress_test import seed_stress_test_products
+        seed_stress_test_products(db)
+
         db.commit()
     finally:
         db.close()
